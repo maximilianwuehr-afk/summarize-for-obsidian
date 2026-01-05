@@ -2,7 +2,7 @@ import { App, PluginSettingTab, Setting, Notice } from "obsidian";
 import type SummarizePlugin from "./main";
 import { SummarizeSettings, OpenRouterModel, SummaryLength, InsertBehavior } from "./types";
 
-type SettingsTabId = "general" | "models";
+type SettingsTabId = "general" | "models" | "freerank";
 
 export class SummarizeSettingTab extends PluginSettingTab {
   plugin: SummarizePlugin;
@@ -29,6 +29,7 @@ export class SummarizeSettingTab extends PluginSettingTab {
     const tabs: { id: SettingsTabId; label: string }[] = [
       { id: "general", label: "General" },
       { id: "models", label: "Models" },
+      { id: "freerank", label: "Free Rank" },
     ];
 
     const nav = containerEl.createDiv({ cls: "summarize-nav" });
@@ -51,6 +52,9 @@ export class SummarizeSettingTab extends PluginSettingTab {
         break;
       case "models":
         this.renderModelsTab(content);
+        break;
+      case "freerank":
+        this.renderFreeRankTab(content);
         break;
     }
   }
@@ -154,6 +158,41 @@ export class SummarizeSettingTab extends PluginSettingTab {
         font-size: 0.85em;
         padding: 4px 8px;
       }
+      .summarize-rank-list {
+        border: 1px solid var(--background-modifier-border);
+        border-radius: 4px;
+        min-height: 100px;
+      }
+      .summarize-rank-item {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 10px 12px;
+        border-bottom: 1px solid var(--background-modifier-border);
+        background: var(--background-primary);
+        cursor: grab;
+      }
+      .summarize-rank-item:last-child {
+        border-bottom: none;
+      }
+      .summarize-rank-item.is-dragging {
+        opacity: 0.5;
+      }
+      .summarize-rank-item.is-drop-target {
+        background: var(--background-secondary);
+        border-top: 2px solid var(--interactive-accent);
+      }
+      .summarize-rank-handle {
+        margin-right: 8px;
+        color: var(--text-muted);
+        cursor: grab;
+      }
+      .summarize-rank-number {
+        font-weight: bold;
+        margin-right: 8px;
+        color: var(--text-muted);
+        min-width: 20px;
+      }
     `;
     document.head.appendChild(style);
   }
@@ -178,10 +217,12 @@ export class SummarizeSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Default Model")
-      .setDesc("Model to use for summarization (select from Models tab)")
+      .setDesc(
+        'Model to use for summarization. Use "auto-free" to automatically use the highest-ranked free model.'
+      )
       .addText((text) =>
         text
-          .setPlaceholder("google/gemini-2.0-flash-exp:free")
+          .setPlaceholder("auto-free or google/gemini-2.0-flash-exp:free")
           .setValue(this.plugin.settings.defaultModel)
           .onChange(async (value) => {
             this.plugin.settings.defaultModel = value;
@@ -235,7 +276,7 @@ export class SummarizeSettingTab extends PluginSettingTab {
 
   private renderModelsTab(containerEl: HTMLElement): void {
     containerEl.createEl("p", {
-      text: "Browse and select OpenRouter models. Use the 'Use' button to set as default.",
+      text: "Browse and select OpenRouter models. Use the 'Use' button to set as default, or select free models to add to the Free Rank.",
       cls: "setting-item-description",
     });
 
@@ -387,9 +428,13 @@ export class SummarizeSettingTab extends PluginSettingTab {
       return;
     }
 
+    const rankSet = new Set(this.plugin.settings.openRouter.freeModelRank);
+
     for (const model of filtered) {
       const isSelected = selectedSet.has(model.id.toLowerCase());
       const isDefault = model.id === this.plugin.settings.defaultModel;
+      const isFree = this.isModelFree(model);
+      const isRanked = rankSet.has(model.id);
 
       const row = list.createDiv({
         cls: `summarize-model-row${isSelected ? " is-selected" : ""}`,
@@ -421,6 +466,17 @@ export class SummarizeSettingTab extends PluginSettingTab {
         new Notice(`Copied: ${model.id}`);
       });
 
+      // Add to rank button (only for free models)
+      if (isFree && !isRanked) {
+        const rankBtn = actions.createEl("button", { text: "Add to Rank" });
+        rankBtn.addEventListener("click", async () => {
+          this.addToFreeRank(model.id);
+          await this.plugin.saveSettings();
+          this.display();
+          new Notice(`Added to free rank: ${model.name}`);
+        });
+      }
+
       // Use as default button
       const useBtn = actions.createEl("button", {
         text: isDefault ? "Current" : "Use",
@@ -441,7 +497,141 @@ export class SummarizeSettingTab extends PluginSettingTab {
       details.createSpan({ text: `Provider: ${this.getProvider(model)}` });
       details.createSpan({ text: `Context: ${model.context_length.toLocaleString()} tokens` });
       details.createSpan({ text: `Cost: ${this.formatPricing(model)}` });
+      if (isRanked) {
+        const rankPos = this.plugin.settings.openRouter.freeModelRank.indexOf(model.id) + 1;
+        details.createSpan({ text: `Rank: #${rankPos}` });
+      }
     }
+  }
+
+  private renderFreeRankTab(containerEl: HTMLElement): void {
+    containerEl.createEl("h3", { text: "Free Model Fallback" });
+
+    containerEl.createEl("p", {
+      text: 'Set the priority order for free models. Use "auto-free" as your default model to automatically use the highest-ranked model that is not rate limited.',
+      cls: "setting-item-description",
+    });
+
+    containerEl.createEl("p", {
+      text: 'Tip: Set your default model to "auto-free" in the General tab.',
+      cls: "summarize-meta",
+    });
+
+    const models = this.plugin.settings.openRouter.models;
+    const modelsById = new Map(models.map((m) => [m.id, m]));
+
+    // Toolbar
+    const toolbar = containerEl.createDiv({ cls: "summarize-toolbar" });
+
+    const seedBtn = toolbar.createEl("button", { text: "Seed from selected free models" });
+    seedBtn.addEventListener("click", async () => {
+      const selectedFree = this.plugin.settings.openRouter.selectedModels.filter((id) => {
+        const model = modelsById.get(id);
+        return model ? this.isModelFree(model) : false;
+      });
+      this.plugin.settings.openRouter.freeModelRank = Array.from(new Set(selectedFree));
+      await this.plugin.saveSettings();
+      this.display();
+      new Notice(`Seeded ${selectedFree.length} free models`);
+    });
+
+    const clearBtn = toolbar.createEl("button", { text: "Clear ranking" });
+    clearBtn.addEventListener("click", async () => {
+      this.plugin.settings.openRouter.freeModelRank = [];
+      await this.plugin.saveSettings();
+      this.display();
+      new Notice("Ranking cleared");
+    });
+
+    const useAutoFreeBtn = toolbar.createEl("button", { text: 'Set default to "auto-free"' });
+    useAutoFreeBtn.addEventListener("click", async () => {
+      this.plugin.settings.defaultModel = "auto-free";
+      await this.plugin.saveSettings();
+      new Notice('Default model set to "auto-free"');
+    });
+
+    // Rank list
+    const rankList = containerEl.createDiv({ cls: "summarize-rank-list" });
+    let dragId: string | null = null;
+
+    const renderList = () => {
+      rankList.empty();
+      const ranked = this.plugin.settings.openRouter.freeModelRank;
+
+      if (ranked.length === 0) {
+        const emptyMsg = rankList.createEl("p", {
+          text: "No ranked models yet. Add free models from the Models tab, or click 'Seed from selected free models'.",
+          cls: "summarize-meta",
+        });
+        emptyMsg.style.padding = "16px";
+        return;
+      }
+
+      ranked.forEach((modelId, index) => {
+        const model = modelsById.get(modelId);
+        const row = rankList.createDiv({ cls: "summarize-rank-item" });
+        row.setAttribute("draggable", "true");
+
+        const labelWrap = row.createDiv({ cls: "summarize-model-header" });
+        const left = labelWrap.createDiv();
+
+        // Rank number and handle
+        const rankNum = left.createSpan({ text: `${index + 1}.`, cls: "summarize-rank-number" });
+        left.createSpan({ text: "⋮⋮", cls: "summarize-rank-handle" });
+
+        // Model name and ID
+        left.createSpan({ text: model?.name || modelId });
+        left.createEl("div", { text: modelId, cls: "summarize-model-id" });
+
+        // Remove button
+        const removeBtn = row.createEl("button", { text: "Remove" });
+        removeBtn.addEventListener("click", async () => {
+          this.plugin.settings.openRouter.freeModelRank =
+            this.plugin.settings.openRouter.freeModelRank.filter((id) => id !== modelId);
+          await this.plugin.saveSettings();
+          renderList();
+        });
+
+        // Drag events
+        row.addEventListener("dragstart", () => {
+          dragId = modelId;
+          row.addClass("is-dragging");
+        });
+
+        row.addEventListener("dragend", () => {
+          dragId = null;
+          row.removeClass("is-dragging");
+        });
+
+        row.addEventListener("dragover", (e) => {
+          e.preventDefault();
+          row.addClass("is-drop-target");
+        });
+
+        row.addEventListener("dragleave", () => {
+          row.removeClass("is-drop-target");
+        });
+
+        row.addEventListener("drop", async (e) => {
+          e.preventDefault();
+          row.removeClass("is-drop-target");
+          if (!dragId || dragId === modelId) return;
+
+          const current = [...this.plugin.settings.openRouter.freeModelRank];
+          const fromIndex = current.indexOf(dragId);
+          const toIndex = current.indexOf(modelId);
+          if (fromIndex === -1 || toIndex === -1) return;
+
+          current.splice(fromIndex, 1);
+          current.splice(toIndex, 0, dragId);
+          this.plugin.settings.openRouter.freeModelRank = current;
+          await this.plugin.saveSettings();
+          renderList();
+        });
+      });
+    };
+
+    renderList();
   }
 
   private async fetchModels(force: boolean): Promise<void> {
@@ -494,5 +684,14 @@ export class SummarizeSettingTab extends PluginSettingTab {
         (id) => id.toLowerCase() !== modelId.toLowerCase()
       );
     }
+  }
+
+  private addToFreeRank(modelId: string): void {
+    const rank = this.plugin.settings.openRouter.freeModelRank;
+    if (!rank.includes(modelId)) {
+      this.plugin.settings.openRouter.freeModelRank = [...rank, modelId];
+    }
+    // Also select it
+    this.toggleSelection(modelId, true);
   }
 }

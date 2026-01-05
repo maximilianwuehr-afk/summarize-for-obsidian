@@ -1,4 +1,4 @@
-import { requestUrl } from "obsidian";
+import { requestUrl, Notice } from "obsidian";
 import {
   SummarizeSettings,
   LLMResponse,
@@ -43,17 +43,22 @@ export class LLMService {
       onStream?: (chunk: string) => void;
     } = {}
   ): Promise<LLMResponse> {
-    const model = options.model || this.settings.defaultModel;
+    const requestedModel = options.model || this.settings.defaultModel;
     const length = options.length || this.settings.defaultLength;
     const language = options.language || this.settings.outputLanguage;
 
     const prompt = this.buildSummarizationPrompt(content, length, language);
 
+    // Handle auto-free model selection with fallback
+    if (requestedModel === "auto-free") {
+      return this.completionWithAutoFree(prompt, options.onStream);
+    }
+
     // Use streaming if callback provided, otherwise regular request
     if (options.onStream) {
-      return this.streamCompletion(model, prompt, options.onStream);
+      return this.streamCompletion(requestedModel, prompt, options.onStream);
     } else {
-      return this.completion(model, prompt);
+      return this.completion(requestedModel, prompt);
     }
   }
 
@@ -89,6 +94,66 @@ Summary:`;
   }
 
   /**
+   * Try completion with auto-free model fallback on rate limits
+   */
+  private async completionWithAutoFree(
+    prompt: string,
+    onStream?: (chunk: string) => void
+  ): Promise<LLMResponse> {
+    const freeModels = this.settings.openRouter.freeModelRank;
+
+    if (freeModels.length === 0) {
+      throw new Error(
+        "No free models ranked. Add models in Settings > Free Rank tab."
+      );
+    }
+
+    let lastError: Error | null = null;
+
+    for (const modelId of freeModels) {
+      try {
+        console.log(`[Summarize] Trying model: ${modelId}`);
+
+        if (onStream) {
+          return await this.streamCompletion(modelId, prompt, onStream);
+        } else {
+          return await this.completion(modelId, prompt);
+        }
+      } catch (error) {
+        lastError = error instanceof Error ? error : new Error(String(error));
+
+        // Check if it's a rate limit error (429)
+        const isRateLimit =
+          lastError.message.includes("429") ||
+          lastError.message.toLowerCase().includes("rate limit") ||
+          lastError.message.toLowerCase().includes("too many requests");
+
+        if (isRateLimit) {
+          console.log(`[Summarize] Rate limited on ${modelId}, trying next...`);
+          new Notice(`Rate limited on ${this.getModelName(modelId)}, trying next...`);
+          continue;
+        }
+
+        // For other errors, throw immediately
+        throw lastError;
+      }
+    }
+
+    // All models failed
+    throw new Error(
+      `All ranked free models are rate limited. Last error: ${lastError?.message}`
+    );
+  }
+
+  /**
+   * Get model display name from ID
+   */
+  private getModelName(modelId: string): string {
+    const model = this.settings.openRouter.models.find((m) => m.id === modelId);
+    return model?.name || modelId;
+  }
+
+  /**
    * Make a completion request (non-streaming)
    */
   private async completion(model: string, prompt: string): Promise<LLMResponse> {
@@ -106,13 +171,25 @@ Summary:`;
         messages: [{ role: "user", content: prompt }],
         max_tokens: 1024,
       }),
+      throw: false, // Don't throw on non-2xx, we handle it
     });
 
+    if (response.status === 429) {
+      throw new Error(`Rate limit exceeded (429) for model ${model}`);
+    }
+
     if (response.status !== 200) {
-      throw new Error(`OpenRouter API error: ${response.status} - ${response.text}`);
+      const errorText = response.text || `HTTP ${response.status}`;
+      throw new Error(`OpenRouter API error: ${errorText}`);
     }
 
     const data = response.json;
+
+    // Check for error in response body
+    if (data.error) {
+      throw new Error(data.error.message || JSON.stringify(data.error));
+    }
+
     const content = data.choices?.[0]?.message?.content || "";
 
     return {
@@ -130,7 +207,6 @@ Summary:`;
     prompt: string,
     onStream: (chunk: string) => void
   ): Promise<LLMResponse> {
-    // Obsidian's requestUrl doesn't support streaming, so we use fetch directly
     const response = await fetch(OPENROUTER_API_URL, {
       method: "POST",
       headers: {
@@ -147,8 +223,13 @@ Summary:`;
       }),
     });
 
+    if (response.status === 429) {
+      throw new Error(`Rate limit exceeded (429) for model ${model}`);
+    }
+
     if (!response.ok) {
-      throw new Error(`OpenRouter API error: ${response.status}`);
+      const errorText = await response.text();
+      throw new Error(`OpenRouter API error: ${response.status} - ${errorText}`);
     }
 
     const reader = response.body?.getReader();
@@ -173,13 +254,22 @@ Summary:`;
 
           try {
             const parsed = JSON.parse(data);
+
+            // Check for error in stream
+            if (parsed.error) {
+              throw new Error(parsed.error.message || JSON.stringify(parsed.error));
+            }
+
             const content = parsed.choices?.[0]?.delta?.content;
             if (content) {
               fullContent += content;
               onStream(content);
             }
-          } catch {
-            // Ignore parse errors for incomplete chunks
+          } catch (e) {
+            // Only rethrow if it's our error, ignore JSON parse errors
+            if (e instanceof Error && e.message.includes("error")) {
+              throw e;
+            }
           }
         }
       }

@@ -1,0 +1,10 @@
+{
+  "id": "summarize",
+  "name": "Summarize",
+  "version": "1.0.0",
+  "minAppVersion": "1.0.0",
+  "description": "Fast URL and note summarization powered by AI. Provides a simple API for other plugins.",
+  "author": "Maximilian Wuehr",
+  "authorUrl": "https://github.com/maximilianwuehr-afk",
+  "isDesktopOnly": false
+}

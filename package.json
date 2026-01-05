@@ -1,0 +1,30 @@
+{
+  "name": "summarize-for-obsidian",
+  "version": "1.0.0",
+  "description": "Fast URL and note summarization for Obsidian. Based on summarize.sh by Peter Steinberger.",
+  "main": "main.js",
+  "scripts": {
+    "dev": "node esbuild.config.mjs",
+    "build": "node esbuild.config.mjs production"
+  },
+  "keywords": [
+    "obsidian",
+    "obsidian-plugin",
+    "summarize",
+    "ai",
+    "llm"
+  ],
+  "author": "Maximilian Wuehr",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/turndown": "^5.0.5",
+    "builtin-modules": "^4.0.0",
+    "esbuild": "^0.24.2",
+    "obsidian": "latest",
+    "typescript": "^5.7.2"
+  },
+  "dependencies": {
+    "turndown": "^7.2.0"
+  }
+}

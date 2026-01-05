@@ -36,7 +36,27 @@ export class ContentExtractor {
    * Extract content from a URL
    */
   async extractFromUrl(url: string): Promise<ExtractedContent> {
-    const response = await this.fetchUrl(url);
+    // Resolve URL shorteners (t.co, bit.ly, etc.) first
+    let resolvedUrl = url;
+    if (this.isUrlShortener(url)) {
+      resolvedUrl = await this.resolveShortUrl(url);
+      console.log(`[Summarize] Resolved ${url} → ${resolvedUrl}`);
+    }
+
+    // Convert GitHub blob URLs to raw URLs
+    const processedUrl = this.convertGitHubUrl(resolvedUrl);
+
+    // Handle raw GitHub/text content
+    if (this.isRawTextUrl(processedUrl)) {
+      return this.extractRawText(processedUrl);
+    }
+
+    // Use Jina Reader for JS-heavy sites (Twitter/X, etc.)
+    if (this.needsJsRendering(processedUrl)) {
+      return this.extractViaJina(url);
+    }
+
+    const response = await this.fetchUrl(processedUrl);
     const html = response.text;
 
     // Parse HTML using DOMParser (available in Obsidian's Electron environment)
@@ -53,6 +73,55 @@ export class ContentExtractor {
     const markdown = this.turndown.turndown(mainContent);
 
     // Clean up the markdown
+    const cleanedContent = this.cleanMarkdown(markdown);
+
+    return {
+      title,
+      content: cleanedContent,
+      url,
+      wordCount: this.countWords(cleanedContent),
+    };
+  }
+
+  /**
+   * Check if URL needs JavaScript rendering (Twitter, X, etc.)
+   */
+  private needsJsRendering(url: string): boolean {
+    try {
+      const parsed = new URL(url);
+      const jsHeavyDomains = [
+        "twitter.com",
+        "x.com",
+        "mobile.twitter.com",
+        "mobile.x.com",
+      ];
+      return jsHeavyDomains.some(
+        (domain) => parsed.hostname === domain || parsed.hostname.endsWith(`.${domain}`)
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Extract content via Jina Reader (handles JS-rendered pages)
+   */
+  private async extractViaJina(url: string): Promise<ExtractedContent> {
+    const jinaUrl = `https://r.jina.ai/${url}`;
+
+    const response = await requestUrl({
+      url: jinaUrl,
+      headers: {
+        Accept: "text/markdown",
+      },
+    });
+
+    const markdown = response.text;
+
+    // Extract title from first heading or first line
+    const titleMatch = markdown.match(/^#\s+(.+)$/m) || markdown.match(/^(.+)$/m);
+    const title = titleMatch ? titleMatch[1].trim() : "Tweet";
+
     const cleanedContent = this.cleanMarkdown(markdown);
 
     return {
@@ -185,5 +254,99 @@ export class ContentExtractor {
    */
   private countWords(text: string): number {
     return text.trim().split(/\s+/).filter(Boolean).length;
+  }
+
+  /**
+   * Check if URL is a shortener service
+   */
+  private isUrlShortener(url: string): boolean {
+    try {
+      const parsed = new URL(url);
+      const shorteners = ["t.co", "bit.ly", "tinyurl.com", "goo.gl", "ow.ly", "is.gd"];
+      return shorteners.includes(parsed.hostname);
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Resolve a shortened URL to its final destination
+   * Uses fetch() to get the final URL after redirects
+   */
+  private async resolveShortUrl(url: string): Promise<string> {
+    try {
+      // Use fetch() which exposes response.url after redirects
+      const response = await fetch(url, {
+        method: "HEAD",
+        redirect: "follow",
+      });
+      return response.url;
+    } catch {
+      // Fallback: try GET request
+      try {
+        const response = await fetch(url, { redirect: "follow" });
+        return response.url;
+      } catch {
+        return url;
+      }
+    }
+  }
+
+  /**
+   * Convert GitHub blob URLs to raw URLs for direct content access
+   */
+  private convertGitHubUrl(url: string): string {
+    try {
+      const parsed = new URL(url);
+
+      // Convert github.com/user/repo/blob/branch/path to raw.githubusercontent.com/user/repo/branch/path
+      if (parsed.hostname === "github.com" && parsed.pathname.includes("/blob/")) {
+        const newPath = parsed.pathname.replace("/blob/", "/");
+        return `https://raw.githubusercontent.com${newPath}`;
+      }
+
+      return url;
+    } catch {
+      return url;
+    }
+  }
+
+  /**
+   * Check if URL returns raw text (not HTML)
+   */
+  private isRawTextUrl(url: string): boolean {
+    try {
+      const parsed = new URL(url);
+      return parsed.hostname === "raw.githubusercontent.com";
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Extract content from raw text URLs (GitHub raw, etc.)
+   */
+  private async extractRawText(url: string): Promise<ExtractedContent> {
+    const response = await requestUrl({
+      url,
+      headers: {
+        "User-Agent": "Mozilla/5.0 (compatible; Obsidian Summarize Plugin)",
+      },
+    });
+
+    const content = response.text;
+
+    // Extract title from first heading or filename
+    const titleMatch = content.match(/^#\s+(.+)$/m);
+    const pathParts = new URL(url).pathname.split("/");
+    const filename = pathParts[pathParts.length - 1];
+    const title = titleMatch ? titleMatch[1].trim() : filename;
+
+    return {
+      title,
+      content: content.trim(),
+      url,
+      wordCount: this.countWords(content),
+    };
   }
 }

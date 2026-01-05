@@ -5,6 +5,7 @@ import {
   SummaryLength,
   LENGTH_WORD_COUNTS,
   OpenRouterModel,
+  DEFAULT_PROMPT,
 } from "../types";
 
 const OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions";
@@ -40,6 +41,7 @@ export class LLMService {
       length?: SummaryLength;
       language?: string;
       model?: string;
+      prompt?: string;
       onStream?: (chunk: string) => void;
     } = {}
   ): Promise<LLMResponse> {
@@ -47,7 +49,7 @@ export class LLMService {
     const length = options.length || this.settings.defaultLength;
     const language = options.language || this.settings.outputLanguage;
 
-    const prompt = this.buildSummarizationPrompt(content, length, language);
+    const prompt = this.buildSummarizationPrompt(content, length, language, options.prompt);
 
     // Handle auto-free model selection with fallback
     if (requestedModel === "auto-free") {
@@ -63,34 +65,27 @@ export class LLMService {
   }
 
   /**
-   * Build the summarization prompt
+   * Build the summarization prompt using template with placeholders.
+   * Placeholders: {{content}}, {{wordCount}}, {{language}}
    */
   private buildSummarizationPrompt(
     content: string,
     length: SummaryLength,
-    language: string
+    language: string,
+    customPrompt?: string
   ): string {
     const wordCount = LENGTH_WORD_COUNTS[length];
     const languageInstruction = language
       ? `Write the summary in ${language}.`
       : "Write the summary in the same language as the source content.";
 
-    return `Summarize the following content in approximately ${wordCount} words.
+    // Priority: parameter prompt > settings customPrompt > DEFAULT_PROMPT
+    const template = customPrompt || this.settings.customPrompt || DEFAULT_PROMPT;
 
-Instructions:
-- Focus on the key points and main ideas
-- ${languageInstruction}
-- Use clear, concise language
-- Maintain the original meaning and intent
-- Do not include meta-commentary like "This article discusses..."
-- Start directly with the summary content
-
-Content to summarize:
----
-${content}
----
-
-Summary:`;
+    return template
+      .replace(/\{\{content\}\}/g, content)
+      .replace(/\{\{wordCount\}\}/g, String(wordCount))
+      .replace(/\{\{language\}\}/g, languageInstruction);
   }
 
   /**
@@ -297,21 +292,63 @@ Summary:`;
     }
 
     const data = response.json;
-    return (data.data || []).map((m: Record<string, unknown>) => ({
-      id: m.id as string,
-      name: (m.name as string) || (m.id as string),
-      description: m.description as string | undefined,
-      context_length: (m.context_length as number) || 4096,
-      pricing: m.pricing as OpenRouterModel["pricing"],
-      architecture: m.architecture as OpenRouterModel["architecture"],
-    }));
+    return (data.data || [])
+      .map((m: Record<string, unknown>) => this.normalizeModel(m))
+      .filter((m): m is OpenRouterModel => m !== null);
   }
 
   /**
-   * Check if a model is free (zero pricing)
+   * Normalize model data from OpenRouter API (handles string/number type coercion)
+   */
+  private normalizeModel(raw: Record<string, unknown>): OpenRouterModel | null {
+    const id = typeof raw.id === "string" ? raw.id : null;
+    if (!id) return null;
+
+    const pricing = (raw.pricing as Record<string, unknown> | undefined) ?? {};
+
+    // OpenRouter API returns pricing as strings, need to parse them
+    const parseNumber = (value: unknown): number => {
+      if (typeof value === "number") return value;
+      if (typeof value === "string") {
+        const parsed = parseFloat(value);
+        return Number.isFinite(parsed) ? parsed : 0;
+      }
+      return 0;
+    };
+
+    const contextLengthRaw = raw.context_length;
+    const contextLength =
+      typeof contextLengthRaw === "number"
+        ? contextLengthRaw
+        : typeof contextLengthRaw === "string"
+          ? parseInt(contextLengthRaw, 10)
+          : 4096;
+
+    return {
+      id,
+      canonical_slug: typeof raw.canonical_slug === "string" ? raw.canonical_slug : undefined,
+      hugging_face_id: typeof raw.hugging_face_id === "string" ? raw.hugging_face_id : undefined,
+      name: typeof raw.name === "string" ? raw.name : id,
+      description: typeof raw.description === "string" ? raw.description : undefined,
+      context_length: Number.isFinite(contextLength) ? contextLength : 4096,
+      pricing: {
+        prompt: parseNumber(pricing.prompt),
+        completion: parseNumber(pricing.completion),
+        request: parseNumber(pricing.request) || undefined,
+        image: parseNumber(pricing.image) || undefined,
+      },
+      supported_parameters: Array.isArray(raw.supported_parameters)
+        ? (raw.supported_parameters as string[])
+        : [],
+      architecture: raw.architecture as OpenRouterModel["architecture"],
+    };
+  }
+
+  /**
+   * Check if a model is free (has :free suffix or zero pricing)
    */
   isModelFree(model: OpenRouterModel): boolean {
-    return model.pricing?.prompt === 0 && model.pricing?.completion === 0;
+    return model.id.endsWith(":free") || (model.pricing.prompt === 0 && model.pricing.completion === 0);
   }
 
   /**

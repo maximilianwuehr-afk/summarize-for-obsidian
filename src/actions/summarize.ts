@@ -46,6 +46,7 @@ export class SummarizeAction {
 
   /**
    * Summarize the current selection
+   * If selection contains URLs, fetches their content and includes it
    */
   async summarizeSelectionCommand(): Promise<void> {
     if (!this.llmService.isConfigured()) {
@@ -60,14 +61,142 @@ export class SummarizeAction {
     }
 
     const editor = view.editor;
-    const selection = editor.getSelection();
+    const selection = editor.getSelection().trim();
 
-    if (!selection.trim()) {
+    if (!selection) {
       new Notice("No text selected.");
       return;
     }
 
+    // Check if selection is just a single URL
+    const singleUrl = this.extractSingleUrl(selection);
+    if (singleUrl) {
+      await this.summarizeUrl(singleUrl);
+      return;
+    }
+
+    // Check if selection contains a URL - fetch and append its content
+    const urls = this.extractUrls(selection);
+    if (urls.length > 0) {
+      await this.summarizeTextWithUrls(selection, [urls[0]], editor);
+      return;
+    }
+
     await this.summarizeText(selection, editor);
+  }
+
+  /**
+   * Extract a single URL if the text is just a URL
+   */
+  private extractSingleUrl(text: string): string | null {
+    const trimmed = text.trim();
+
+    // Check if it's a bare URL
+    if (/^https?:\/\/[^\s]+$/.test(trimmed)) {
+      try {
+        new URL(trimmed);
+        return trimmed;
+      } catch {
+        return null;
+      }
+    }
+
+    // Check if it's a markdown link [text](url)
+    const mdMatch = trimmed.match(/^\[([^\]]*)\]\((https?:\/\/[^)]+)\)$/);
+    if (mdMatch) {
+      try {
+        new URL(mdMatch[2]);
+        return mdMatch[2];
+      } catch {
+        return null;
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Extract all URLs from text (bare URLs and markdown links)
+   */
+  private extractUrls(text: string): string[] {
+    const urls: string[] = [];
+    const seen = new Set<string>();
+
+    // Match bare URLs
+    const bareUrlRegex = /https?:\/\/[^\s<>")\]]+/g;
+    let match;
+    while ((match = bareUrlRegex.exec(text)) !== null) {
+      const url = match[0].replace(/[.,;:!?)]+$/, ""); // Clean trailing punctuation
+      if (!seen.has(url)) {
+        try {
+          new URL(url);
+          seen.add(url);
+          urls.push(url);
+        } catch {
+          // Invalid URL, skip
+        }
+      }
+    }
+
+    // Match markdown links [text](url)
+    const mdLinkRegex = /\[([^\]]*)\]\((https?:\/\/[^)]+)\)/g;
+    while ((match = mdLinkRegex.exec(text)) !== null) {
+      const url = match[2];
+      if (!seen.has(url)) {
+        try {
+          new URL(url);
+          seen.add(url);
+          urls.push(url);
+        } catch {
+          // Invalid URL, skip
+        }
+      }
+    }
+
+    return urls;
+  }
+
+  /**
+   * Summarize text that contains URLs by fetching their content
+   */
+  private async summarizeTextWithUrls(
+    text: string,
+    urls: string[],
+    editor: Editor
+  ): Promise<void> {
+    const notice = new Notice("Fetching linked content...", 0);
+
+    try {
+      let combinedContent = text;
+
+      for (const url of urls) {
+        try {
+          notice.setMessage(`Fetching ${new URL(url).hostname}...`);
+          const extracted = await this.contentExtractor.extractFromUrl(url);
+          combinedContent += `\n\n---\n\n## Content from: ${extracted.title}\nSource: ${url}\n\n${extracted.content}`;
+        } catch (error) {
+          console.warn(`[Summarize] Failed to fetch ${url}:`, error);
+          // Continue with other URLs
+        }
+      }
+
+      notice.setMessage("Summarizing...");
+
+      const response = await this.llmService.summarize(combinedContent, {
+        length: this.settings.defaultLength,
+        language: this.settings.outputLanguage,
+      });
+
+      notice.hide();
+      new Notice("Summary complete!");
+
+      this.insertSummary(editor, response.content);
+    } catch (error) {
+      notice.hide();
+      const message = error instanceof Error ? error.message : "Unknown error";
+      new Notice(`Failed to summarize: ${message}`);
+      throw error;
+    }
   }
 
   /**
@@ -193,13 +322,36 @@ export class SummarizeAction {
         break;
 
       case "below":
-      default:
-        const cursor = editor.getCursor();
+      default: {
+        // Get the end of the selection (or cursor if no selection)
+        const selection = editor.getSelection();
+        const cursor = selection ? editor.getCursor("to") : editor.getCursor();
         const line = editor.getLine(cursor.line);
         const insertPos = { line: cursor.line, ch: line.length };
 
-        editor.replaceRange("\n\n" + formattedSummary, insertPos);
+        // Detect indentation of current line
+        const indentMatch = line.match(/^(\s*)/);
+        const baseIndent = indentMatch ? indentMatch[1] : "";
+
+        // Check if we're in a list item - if so, indent the summary as a sub-item
+        const isListItem = /^\s*[-*+]\s/.test(line) || /^\s*\d+\.\s/.test(line);
+        const summaryIndent = isListItem ? baseIndent + "\t" : baseIndent;
+
+        // Indent each non-empty line of the summary
+        const indentedSummary = formattedSummary
+          .split("\n")
+          .map((l) => (l.trim() ? summaryIndent + l : ""))
+          .filter((l, i, arr) => {
+            // Remove consecutive empty lines
+            if (!l && i > 0 && !arr[i - 1]) return false;
+            return true;
+          })
+          .join("\n");
+
+        // Single newline before summary
+        editor.replaceRange("\n" + indentedSummary, insertPos);
         break;
+      }
     }
   }
 

@@ -10,6 +10,7 @@ export interface SummarizeSettings {
   // Summarization defaults
   defaultLength: SummaryLength;
   outputLanguage: string; // empty = auto-detect from content
+  customPrompt: string; // custom prompt template (empty = use default)
 
   // Output behavior
   insertBehavior: InsertBehavior;
@@ -18,7 +19,7 @@ export interface SummarizeSettings {
   openRouter: OpenRouterCache;
 }
 
-export type SummaryLength = "short" | "medium" | "long";
+export type SummaryLength = "brief" | "short" | "medium" | "long";
 export type InsertBehavior = "below" | "replace" | "clipboard";
 
 // ============================================================================
@@ -27,10 +28,13 @@ export type InsertBehavior = "below" | "replace" | "clipboard";
 
 export interface OpenRouterModel {
   id: string;
+  canonical_slug?: string;
+  hugging_face_id?: string;
   name: string;
   description?: string;
   context_length: number;
   pricing: OpenRouterPricing;
+  supported_parameters?: string[];
   architecture?: OpenRouterArchitecture;
 }
 
@@ -48,11 +52,19 @@ export interface OpenRouterArchitecture {
   tokenizer?: string;
 }
 
+export interface OpenRouterBenchmarks {
+  arenaScores: Record<string, number>;
+  openLlmScores: Record<string, number>;
+  openLlmFetched: Record<string, string>;
+  lastFetched: string | null;
+}
+
 export interface OpenRouterCache {
   models: OpenRouterModel[];
   lastFetched: string | null;
   selectedModels: string[];
   freeModelRank: string[];
+  benchmarks: OpenRouterBenchmarks;
 }
 
 // ============================================================================
@@ -66,6 +78,8 @@ export interface SummarizeOptions {
   language?: string;
   /** Override the default model */
   model?: string;
+  /** Custom prompt template. Use {{content}}, {{wordCount}}, {{language}} as placeholders */
+  prompt?: string;
   /** Optional callback for streaming responses */
   onStream?: (chunk: string) => void;
 }
@@ -104,17 +118,41 @@ export interface LLMResponse {
 // Default Settings
 // ============================================================================
 
+export const DEFAULT_PROMPT = `Summarize the following content in approximately {{wordCount}} words.
+
+Instructions:
+- Focus on the key points and main ideas
+- {{language}}
+- Use clear, concise language
+- Maintain the original meaning and intent
+- Do not include meta-commentary like "This article discusses..."
+- Start directly with the summary content
+
+Content to summarize:
+---
+{{content}}
+---
+
+Summary:`;
+
 export const DEFAULT_SETTINGS: SummarizeSettings = {
   openRouterApiKey: "",
   defaultModel: "google/gemini-2.0-flash-exp:free",
   defaultLength: "medium",
   outputLanguage: "",
+  customPrompt: "",
   insertBehavior: "below",
   openRouter: {
     models: [],
     lastFetched: null,
     selectedModels: [],
     freeModelRank: [],
+    benchmarks: {
+      arenaScores: {},
+      openLlmScores: {},
+      openLlmFetched: {},
+      lastFetched: null,
+    },
   },
 };
 
@@ -123,6 +161,7 @@ export const DEFAULT_SETTINGS: SummarizeSettings = {
 // ============================================================================
 
 export const LENGTH_WORD_COUNTS: Record<SummaryLength, number> = {
+  brief: 50,
   short: 100,
   medium: 250,
   long: 500,

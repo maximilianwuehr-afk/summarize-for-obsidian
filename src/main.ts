@@ -113,6 +113,7 @@ export default class SummarizePlugin extends Plugin {
           length: options?.length,
           language: options?.language,
           model: options?.model,
+          prompt: options?.prompt,
           onStream: options?.onStream,
         });
 
@@ -133,6 +134,7 @@ export default class SummarizePlugin extends Plugin {
           length: options?.length,
           language: options?.language,
           model: options?.model,
+          prompt: options?.prompt,
           onStream: options?.onStream,
         });
 

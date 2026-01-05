@@ -7,8 +7,12 @@ type SettingsTabId = "general" | "models";
 export class SummarizeSettingTab extends PluginSettingTab {
   plugin: SummarizePlugin;
   private activeTab: SettingsTabId = "general";
+
+  // Filter state
   private searchFilter: string = "";
+  private providerFilter: string = "all";
   private freeOnly: boolean = false;
+  private selectedOnly: boolean = false;
 
   constructor(app: App, plugin: SummarizePlugin) {
     super(app, plugin);
@@ -19,7 +23,6 @@ export class SummarizeSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
 
-    // Add custom styles
     this.addStyles();
 
     // Tab navigation
@@ -85,16 +88,27 @@ export class SummarizeSettingTab extends PluginSettingTab {
         gap: 8px;
         margin-bottom: 12px;
         align-items: center;
+        flex-wrap: wrap;
       }
       .summarize-toolbar input[type="text"] {
         flex: 1;
+        min-width: 150px;
+      }
+      .summarize-toolbar select {
+        min-width: 120px;
+      }
+      .summarize-toolbar label {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        white-space: nowrap;
       }
       .summarize-meta {
         font-size: 0.85em;
         color: var(--text-muted);
       }
       .summarize-models {
-        max-height: 400px;
+        max-height: 500px;
         overflow-y: auto;
         border: 1px solid var(--background-modifier-border);
         border-radius: 4px;
@@ -112,7 +126,8 @@ export class SummarizeSettingTab extends PluginSettingTab {
       .summarize-model-header {
         display: flex;
         justify-content: space-between;
-        align-items: center;
+        align-items: flex-start;
+        gap: 8px;
       }
       .summarize-model-title {
         font-weight: 500;
@@ -128,6 +143,16 @@ export class SummarizeSettingTab extends PluginSettingTab {
         margin-top: 4px;
         font-size: 0.85em;
         color: var(--text-muted);
+        flex-wrap: wrap;
+      }
+      .summarize-model-actions {
+        display: flex;
+        gap: 4px;
+        align-items: center;
+      }
+      .summarize-model-actions button {
+        font-size: 0.85em;
+        padding: 4px 8px;
       }
     `;
     document.head.appendChild(style);
@@ -153,7 +178,7 @@ export class SummarizeSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Default Model")
-      .setDesc("Model to use for summarization (use model ID from Models tab)")
+      .setDesc("Model to use for summarization (select from Models tab)")
       .addText((text) =>
         text
           .setPlaceholder("google/gemini-2.0-flash-exp:free")
@@ -210,7 +235,7 @@ export class SummarizeSettingTab extends PluginSettingTab {
 
   private renderModelsTab(containerEl: HTMLElement): void {
     containerEl.createEl("p", {
-      text: "Browse OpenRouter models. Click a model ID to copy it for use in settings.",
+      text: "Browse and select OpenRouter models. Use the 'Use' button to set as default.",
       cls: "setting-item-description",
     });
 
@@ -222,72 +247,121 @@ export class SummarizeSettingTab extends PluginSettingTab {
       return;
     }
 
-    // Toolbar
+    // Toolbar with refresh button
     const toolbar = containerEl.createDiv({ cls: "summarize-toolbar" });
 
-    const refreshBtn = toolbar.createEl("button", { text: "Refresh Models" });
+    const refreshBtn = toolbar.createEl("button", { text: "Refresh models" });
     refreshBtn.addEventListener("click", async () => {
+      refreshBtn.disabled = true;
       await this.fetchModels(true);
       this.display();
     });
 
     const lastFetched = this.plugin.settings.openRouter.lastFetched;
     const lastFetchedText = lastFetched
-      ? `Last updated: ${new Date(lastFetched).toLocaleDateString()}`
-      : "Never fetched";
+      ? `Last sync: ${new Date(lastFetched).toLocaleString()}`
+      : "No model cache yet";
     toolbar.createEl("span", { text: lastFetchedText, cls: "summarize-meta" });
 
-    // Filters
+    const models = this.plugin.settings.openRouter.models;
+    if (!models.length) {
+      containerEl.createEl("p", {
+        text: "No models cached yet. Click 'Refresh models' to load the latest list.",
+        cls: "summarize-meta",
+      });
+      return;
+    }
+
+    // Get unique providers
+    const providers = Array.from(
+      new Set(models.map((m) => this.getProvider(m)))
+    ).sort((a, b) => a.localeCompare(b));
+
+    // Validate provider filter
+    if (this.providerFilter !== "all" && !providers.includes(this.providerFilter)) {
+      this.providerFilter = "all";
+    }
+
+    // Filters row
     const filters = containerEl.createDiv({ cls: "summarize-toolbar" });
 
+    // Search input
     const searchInput = filters.createEl("input", {
       type: "text",
       placeholder: "Search models...",
     });
     searchInput.value = this.searchFilter;
-    searchInput.addEventListener("input", (e) => {
-      this.searchFilter = (e.target as HTMLInputElement).value;
-      this.renderModelList(containerEl);
+    searchInput.addEventListener("input", () => {
+      this.searchFilter = searchInput.value;
+      this.display();
     });
 
-    const freeCheckbox = filters.createEl("label");
-    const checkbox = freeCheckbox.createEl("input", { type: "checkbox" });
-    checkbox.checked = this.freeOnly;
-    checkbox.addEventListener("change", () => {
-      this.freeOnly = checkbox.checked;
-      this.renderModelList(containerEl);
+    // Provider dropdown
+    const providerSelect = filters.createEl("select");
+    providerSelect.createEl("option", { text: "All providers", value: "all" });
+    providers.forEach((provider) => {
+      providerSelect.createEl("option", { text: provider, value: provider });
     });
-    freeCheckbox.appendText(" Free only");
+    providerSelect.value = this.providerFilter;
+    providerSelect.addEventListener("change", () => {
+      this.providerFilter = providerSelect.value;
+      this.display();
+    });
 
-    // Model list container
-    containerEl.createDiv({ cls: "summarize-models", attr: { id: "model-list" } });
-    this.renderModelList(containerEl);
-  }
+    // Free only toggle
+    const freeLabel = filters.createEl("label");
+    const freeCheckbox = freeLabel.createEl("input", { type: "checkbox" });
+    freeCheckbox.checked = this.freeOnly;
+    freeCheckbox.addEventListener("change", () => {
+      this.freeOnly = freeCheckbox.checked;
+      this.display();
+    });
+    freeLabel.appendText(" Free only");
 
-  private renderModelList(containerEl: HTMLElement): void {
-    const listEl = containerEl.querySelector("#model-list") as HTMLElement;
-    if (!listEl) return;
+    // Selected only toggle
+    const selectedLabel = filters.createEl("label");
+    const selectedCheckbox = selectedLabel.createEl("input", { type: "checkbox" });
+    selectedCheckbox.checked = this.selectedOnly;
+    selectedCheckbox.addEventListener("change", () => {
+      this.selectedOnly = selectedCheckbox.checked;
+      this.display();
+    });
+    selectedLabel.appendText(" Selected only");
 
-    listEl.empty();
+    // Filter models
+    const selectedSet = new Set(
+      this.plugin.settings.openRouter.selectedModels.map((id) => id.toLowerCase())
+    );
 
-    let models = this.plugin.settings.openRouter.models;
+    let filtered = models;
 
-    // Apply filters
+    // Apply search filter
     if (this.searchFilter) {
       const search = this.searchFilter.toLowerCase();
-      models = models.filter(
+      filtered = filtered.filter(
         (m) =>
           m.id.toLowerCase().includes(search) ||
           m.name.toLowerCase().includes(search)
       );
     }
 
+    // Apply provider filter
+    if (this.providerFilter !== "all") {
+      filtered = filtered.filter((m) => this.getProvider(m) === this.providerFilter);
+    }
+
+    // Apply free only filter
     if (this.freeOnly) {
-      models = models.filter((m) => this.isModelFree(m));
+      filtered = filtered.filter((m) => this.isModelFree(m));
+    }
+
+    // Apply selected only filter
+    if (this.selectedOnly) {
+      filtered = filtered.filter((m) => selectedSet.has(m.id.toLowerCase()));
     }
 
     // Sort: free first, then by name
-    models.sort((a, b) => {
+    filtered.sort((a, b) => {
       const aFree = this.isModelFree(a);
       const bFree = this.isModelFree(b);
       if (aFree && !bFree) return -1;
@@ -295,35 +369,60 @@ export class SummarizeSettingTab extends PluginSettingTab {
       return a.name.localeCompare(b.name);
     });
 
-    if (models.length === 0) {
-      listEl.createEl("p", {
-        text: this.plugin.settings.openRouter.models.length === 0
-          ? "Click 'Refresh Models' to load available models."
-          : "No models match your filters.",
+    // Show count
+    containerEl.createEl("p", {
+      text: `Showing ${filtered.length} of ${models.length} models.`,
+      cls: "summarize-meta",
+    });
+
+    // Model list
+    const list = containerEl.createDiv({ cls: "summarize-models" });
+
+    if (filtered.length === 0) {
+      list.createEl("p", {
+        text: "No models match your filters.",
         cls: "summarize-meta",
       });
+      list.style.padding = "12px";
       return;
     }
 
-    for (const model of models) {
+    for (const model of filtered) {
+      const isSelected = selectedSet.has(model.id.toLowerCase());
       const isDefault = model.id === this.plugin.settings.defaultModel;
-      const row = listEl.createDiv({
-        cls: `summarize-model-row ${isDefault ? "is-selected" : ""}`,
+
+      const row = list.createDiv({
+        cls: `summarize-model-row${isSelected ? " is-selected" : ""}`,
       });
 
       const header = row.createDiv({ cls: "summarize-model-header" });
 
+      // Title and ID
       const titleWrap = header.createDiv();
-      titleWrap.createDiv({ text: model.name, cls: "summarize-model-title" });
+      titleWrap.createDiv({ text: model.name || model.id, cls: "summarize-model-title" });
+      titleWrap.createDiv({ text: model.id, cls: "summarize-model-id" });
 
-      const idEl = titleWrap.createDiv({ text: model.id, cls: "summarize-model-id" });
-      idEl.style.cursor = "pointer";
-      idEl.addEventListener("click", () => {
-        navigator.clipboard.writeText(model.id);
+      // Actions
+      const actions = header.createDiv({ cls: "summarize-model-actions" });
+
+      // Select checkbox
+      const selectBox = actions.createEl("input", { type: "checkbox" });
+      selectBox.checked = isSelected;
+      selectBox.addEventListener("change", async () => {
+        this.toggleSelection(model.id, selectBox.checked);
+        await this.plugin.saveSettings();
+        this.display();
+      });
+
+      // Copy ID button
+      const copyBtn = actions.createEl("button", { text: "Copy ID" });
+      copyBtn.addEventListener("click", async () => {
+        await navigator.clipboard.writeText(model.id);
         new Notice(`Copied: ${model.id}`);
       });
 
-      const useBtn = header.createEl("button", {
+      // Use as default button
+      const useBtn = actions.createEl("button", {
         text: isDefault ? "Current" : "Use",
       });
       if (isDefault) {
@@ -332,13 +431,15 @@ export class SummarizeSettingTab extends PluginSettingTab {
         useBtn.addEventListener("click", async () => {
           this.plugin.settings.defaultModel = model.id;
           await this.plugin.saveSettings();
-          this.renderModelList(containerEl);
+          this.display();
           new Notice(`Default model set to: ${model.id}`);
         });
       }
 
+      // Details row
       const details = row.createDiv({ cls: "summarize-model-details" });
-      details.createSpan({ text: `Context: ${model.context_length.toLocaleString()}` });
+      details.createSpan({ text: `Provider: ${this.getProvider(model)}` });
+      details.createSpan({ text: `Context: ${model.context_length.toLocaleString()} tokens` });
       details.createSpan({ text: `Cost: ${this.formatPricing(model)}` });
     }
   }
@@ -364,6 +465,11 @@ export class SummarizeSettingTab extends PluginSettingTab {
     }
   }
 
+  private getProvider(model: OpenRouterModel): string {
+    const parts = model.id.split("/");
+    return parts.length > 1 ? parts[0] : "unknown";
+  }
+
   private isModelFree(model: OpenRouterModel): boolean {
     return model.pricing?.prompt === 0 && model.pricing?.completion === 0;
   }
@@ -375,5 +481,18 @@ export class SummarizeSettingTab extends PluginSettingTab {
     const prompt = (model.pricing?.prompt || 0) * 1000000;
     const completion = (model.pricing?.completion || 0) * 1000000;
     return `$${prompt.toFixed(2)}/$${completion.toFixed(2)} per 1M`;
+  }
+
+  private toggleSelection(modelId: string, selected: boolean): void {
+    const existing = this.plugin.settings.openRouter.selectedModels;
+    if (selected) {
+      if (!existing.includes(modelId)) {
+        this.plugin.settings.openRouter.selectedModels = [...existing, modelId];
+      }
+    } else {
+      this.plugin.settings.openRouter.selectedModels = existing.filter(
+        (id) => id.toLowerCase() !== modelId.toLowerCase()
+      );
+    }
   }
 }

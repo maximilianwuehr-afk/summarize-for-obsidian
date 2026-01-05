@@ -9,7 +9,6 @@ export interface SummarizeSettings {
 
   // Summarization defaults
   defaultLength: SummaryLength;
-  outputLanguage: string; // empty = auto-detect from content
   customPrompt: string; // custom prompt template (empty = use default)
 
   // Output behavior
@@ -72,13 +71,11 @@ export interface OpenRouterCache {
 // ============================================================================
 
 export interface SummarizeOptions {
-  /** Summary length: short (~100 words), medium (~250 words), long (~500 words) */
+  /** Summary length: brief (~50 words), short (~100 words), medium (~250 words), long (~500 words) */
   length?: SummaryLength;
-  /** Output language (e.g., "en", "de"). Empty = auto-detect from content */
-  language?: string;
   /** Override the default model */
   model?: string;
-  /** Custom prompt template. Use {{content}}, {{wordCount}}, {{language}} as placeholders */
+  /** Custom prompt template. Use {{content}} and {{wordCount}} as placeholders */
   prompt?: string;
   /** Optional callback for streaming responses */
   onStream?: (chunk: string) => void;
@@ -120,26 +117,20 @@ export interface LLMResponse {
 
 export const DEFAULT_PROMPT = `Summarize the following content in approximately {{wordCount}} words.
 
-Instructions:
-- Focus on the key points and main ideas
-- {{language}}
-- Use clear, concise language
-- Maintain the original meaning and intent
-- Do not include meta-commentary like "This article discusses..."
-- Start directly with the summary content
+Rules:
+- Lead with the single most important insight or finding
+- Format as bullets: one-liner "why this matters", then elaboration
+- Include specific details: numbers, names, concrete examples
+- Skip meta-commentary ("This article discusses...")
+- Skip obvious context ("In today's world...")
+- If something important is NOT covered, note it briefly at the end
 
-Content to summarize:
----
-{{content}}
----
-
-Summary:`;
+{{content}}`;
 
 export const DEFAULT_SETTINGS: SummarizeSettings = {
   openRouterApiKey: "",
   defaultModel: "google/gemini-2.0-flash-exp:free",
   defaultLength: "medium",
-  outputLanguage: "",
   customPrompt: "",
   insertBehavior: "below",
   openRouter: {

@@ -262,19 +262,6 @@ export class SummarizeSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName("Output Language")
-      .setDesc("Leave empty to auto-detect from source content")
-      .addText((text) =>
-        text
-          .setPlaceholder("en, de, fr, etc.")
-          .setValue(this.plugin.settings.outputLanguage)
-          .onChange(async (value) => {
-            this.plugin.settings.outputLanguage = value;
-            await this.plugin.saveSettings();
-          })
-      );
-
-    new Setting(containerEl)
       .setName("Insert Behavior")
       .setDesc("How to insert the summary into your note")
       .addDropdown((dropdown) =>
@@ -298,7 +285,6 @@ export class SummarizeSettingTab extends PluginSettingTab {
       Customize the summarization prompt. Use placeholders:<br>
       <code>{{content}}</code> - The content to summarize<br>
       <code>{{wordCount}}</code> - Target word count (based on length setting)<br>
-      <code>{{language}}</code> - Language instruction<br>
       Leave empty to use the default prompt.
     `;
 

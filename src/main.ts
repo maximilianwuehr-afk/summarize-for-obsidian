@@ -195,38 +195,10 @@ export default class SummarizePlugin extends Plugin {
   }
 
   /**
-   * Summarize a link and insert the summary below
+   * Summarize a link and insert the summary below (with streaming)
    */
   private async summarizeLinkAtCursor(editor: Editor, url: string): Promise<void> {
-    if (!this.llmService.isConfigured()) {
-      new Notice("Please configure your OpenRouter API key in settings.");
-      return;
-    }
-
-    const notice = new Notice("Extracting content...", 0);
-
-    try {
-      const extracted = await this.contentExtractor.extractFromUrl(url);
-      notice.setMessage(`Summarizing ${extracted.wordCount} words...`);
-
-      const response = await this.llmService.summarize(extracted.content, {
-        length: this.settings.defaultLength,
-        language: this.settings.outputLanguage,
-      });
-
-      notice.hide();
-
-      // Insert summary below the current line
-      const cursor = editor.getCursor();
-      const line = editor.getLine(cursor.line);
-      const insertPos = { line: cursor.line, ch: line.length };
-      editor.replaceRange("\n\n" + response.content.trim(), insertPos);
-
-      new Notice("Summary inserted!");
-    } catch (error) {
-      notice.hide();
-      const message = error instanceof Error ? error.message : "Unknown error";
-      new Notice(`Failed to summarize: ${message}`);
-    }
+    // Delegate to summarizeAction which handles streaming
+    await this.summarizeAction.summarizeUrl(url);
   }
 }

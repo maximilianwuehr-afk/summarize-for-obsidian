@@ -39,26 +39,25 @@ export class LLMService {
     content: string,
     options: {
       length?: SummaryLength;
-      language?: string;
       model?: string;
       prompt?: string;
       onStream?: (chunk: string) => void;
+      abortSignal?: AbortSignal;
     } = {}
   ): Promise<LLMResponse> {
     const requestedModel = options.model || this.settings.defaultModel;
     const length = options.length || this.settings.defaultLength;
-    const language = options.language || this.settings.outputLanguage;
 
-    const prompt = this.buildSummarizationPrompt(content, length, language, options.prompt);
+    const prompt = this.buildSummarizationPrompt(content, length, options.prompt);
 
     // Handle auto-free model selection with fallback
     if (requestedModel === "auto-free") {
-      return this.completionWithAutoFree(prompt, options.onStream);
+      return this.completionWithAutoFree(prompt, options.onStream, options.abortSignal);
     }
 
     // Use streaming if callback provided, otherwise regular request
     if (options.onStream) {
-      return this.streamCompletion(requestedModel, prompt, options.onStream);
+      return this.streamCompletion(requestedModel, prompt, options.onStream, options.abortSignal);
     } else {
       return this.completion(requestedModel, prompt);
     }
@@ -66,26 +65,21 @@ export class LLMService {
 
   /**
    * Build the summarization prompt using template with placeholders.
-   * Placeholders: {{content}}, {{wordCount}}, {{language}}
+   * Placeholders: {{content}}, {{wordCount}}
    */
   private buildSummarizationPrompt(
     content: string,
     length: SummaryLength,
-    language: string,
     customPrompt?: string
   ): string {
     const wordCount = LENGTH_WORD_COUNTS[length];
-    const languageInstruction = language
-      ? `Write the summary in ${language}.`
-      : "Write the summary in the same language as the source content.";
 
     // Priority: parameter prompt > settings customPrompt > DEFAULT_PROMPT
     const template = customPrompt || this.settings.customPrompt || DEFAULT_PROMPT;
 
     return template
       .replace(/\{\{content\}\}/g, content)
-      .replace(/\{\{wordCount\}\}/g, String(wordCount))
-      .replace(/\{\{language\}\}/g, languageInstruction);
+      .replace(/\{\{wordCount\}\}/g, String(wordCount));
   }
 
   /**
@@ -93,7 +87,8 @@ export class LLMService {
    */
   private async completionWithAutoFree(
     prompt: string,
-    onStream?: (chunk: string) => void
+    onStream?: (chunk: string) => void,
+    abortSignal?: AbortSignal
   ): Promise<LLMResponse> {
     const freeModels = this.settings.openRouter.freeModelRank;
 
@@ -106,15 +101,24 @@ export class LLMService {
     let lastError: Error | null = null;
 
     for (const modelId of freeModels) {
+      // Check if aborted before trying next model
+      if (abortSignal?.aborted) {
+        throw new DOMException("Aborted", "AbortError");
+      }
+
       try {
         console.log(`[Summarize] Trying model: ${modelId}`);
 
         if (onStream) {
-          return await this.streamCompletion(modelId, prompt, onStream);
+          return await this.streamCompletion(modelId, prompt, onStream, abortSignal);
         } else {
           return await this.completion(modelId, prompt);
         }
       } catch (error) {
+        // Re-throw abort errors immediately
+        if (error instanceof DOMException && error.name === "AbortError") {
+          throw error;
+        }
         lastError = error instanceof Error ? error : new Error(String(error));
 
         // Check if it's a rate limit error (429)
@@ -200,7 +204,8 @@ export class LLMService {
   private async streamCompletion(
     model: string,
     prompt: string,
-    onStream: (chunk: string) => void
+    onStream: (chunk: string) => void,
+    abortSignal?: AbortSignal
   ): Promise<LLMResponse> {
     const response = await fetch(OPENROUTER_API_URL, {
       method: "POST",
@@ -216,6 +221,7 @@ export class LLMService {
         max_tokens: 1024,
         stream: true,
       }),
+      signal: abortSignal,
     });
 
     if (response.status === 429) {

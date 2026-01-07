@@ -111,7 +111,6 @@ export default class SummarizePlugin extends Plugin {
 
         const response = await this.llmService.summarize(content, {
           length: options?.length,
-          language: options?.language,
           model: options?.model,
           prompt: options?.prompt,
           onStream: options?.onStream,
@@ -132,7 +131,6 @@ export default class SummarizePlugin extends Plugin {
 
         const response = await this.llmService.summarize(extracted.content, {
           length: options?.length,
-          language: options?.language,
           model: options?.model,
           prompt: options?.prompt,
           onStream: options?.onStream,

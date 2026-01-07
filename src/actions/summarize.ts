@@ -373,7 +373,6 @@ export class SummarizeAction {
 
         const result = await this.executeStreamingSummarize(extracted.content, editor, {
           length: options?.length,
-          language: options?.language,
           model: options?.model,
         });
 
@@ -388,7 +387,6 @@ export class SummarizeAction {
 
       const response = await this.llmService.summarize(extracted.content, {
         length: options?.length,
-        language: options?.language,
         model: options?.model,
         onStream: options?.onStream,
       });
@@ -427,7 +425,6 @@ export class SummarizeAction {
     if (stream && editor && !options?.onStream) {
       const result = await this.executeStreamingSummarize(content, editor, {
         length: options?.length,
-        language: options?.language,
         model: options?.model,
       });
 
@@ -443,7 +440,6 @@ export class SummarizeAction {
     try {
       const response = await this.llmService.summarize(content, {
         length: options?.length,
-        language: options?.language,
         model: options?.model,
         onStream: options?.onStream,
       });
